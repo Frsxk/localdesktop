@@ -9,7 +9,10 @@ use crate::{
         utils::application_context::get_application_context,
         utils::ndk::run_in_jvm,
     },
-    core::config::{CommandConfig, ARCH_FS_ARCHIVE, ARCH_FS_ROOT},
+    core::{
+        config::{CommandConfig, ARCH_FS_ARCHIVE, ARCH_FS_ROOT},
+        plasma::apply_plasma_scaling,
+    },
 };
 use jni::objects::JObject;
 use jni::sys::_jobject;
@@ -321,6 +324,16 @@ defaultPref("security.sandbox.content.level", 0);
 fn setup_qterminal_wrapper(_: &SetupOptions) -> StageOutput {
     let fs_root = Path::new(ARCH_FS_ROOT);
 
+    // KDE Plasma (the default DE) ships with Konsole rather than QTerminal, so on
+    // a default install QTerminal isn't present and the wrapper would shadow
+    // `qterminal` in $PATH with a script that immediately fails. Only install the
+    // wrapper when QTerminal is actually present (e.g. user added it back via a
+    // custom DE config).
+    let qterminal_bin = fs_root.join("usr/bin/qterminal");
+    if !qterminal_bin.exists() {
+        return None;
+    }
+
     let wrapper_path = fs_root.join("usr/local/bin/qterminal");
     let wrapper = r#"#!/bin/sh
 if [ "$#" -eq 0 ]; then
@@ -340,296 +353,6 @@ exec /usr/bin/qterminal "$@"
         .expect("Failed to mark qterminal wrapper executable");
 
     None
-}
-
-#[derive(Debug)]
-enum KvLine {
-    Entry {
-        key: String,
-        value: String,
-        prefix: String,
-        delimiter: char,
-    },
-    Other(String),
-}
-
-fn parse_kv_lines(content: &str, delimiter: char) -> Vec<KvLine> {
-    content
-        .lines()
-        .map(|line| {
-            let trimmed = line.trim_start();
-            if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with('!') {
-                return KvLine::Other(line.to_string());
-            }
-            if let Some((left, right)) = line.split_once(delimiter) {
-                let key = left.trim().to_string();
-                if key.is_empty() {
-                    return KvLine::Other(line.to_string());
-                }
-                let prefix_len = line.len() - trimmed.len();
-                let prefix = line[..prefix_len].to_string();
-                let value = right.trim().to_string();
-                KvLine::Entry {
-                    key,
-                    value,
-                    prefix,
-                    delimiter,
-                }
-            } else {
-                KvLine::Other(line.to_string())
-            }
-        })
-        .collect()
-}
-
-fn set_kv_value(lines: &mut Vec<KvLine>, key: &str, value: &str, delimiter: char) {
-    let mut updated = false;
-    for line in lines.iter_mut() {
-        if let KvLine::Entry {
-            key: entry_key,
-            value: entry_value,
-            ..
-        } = line
-        {
-            if entry_key == key {
-                *entry_value = value.to_string();
-                updated = true;
-            }
-        }
-    }
-    if !updated {
-        lines.push(KvLine::Entry {
-            key: key.to_string(),
-            value: value.to_string(),
-            prefix: String::new(),
-            delimiter,
-        });
-    }
-}
-
-fn render_kv_lines(lines: &[KvLine]) -> String {
-    let mut out: Vec<String> = Vec::new();
-    for line in lines {
-        match line {
-            KvLine::Entry {
-                key,
-                value,
-                prefix,
-                delimiter,
-            } => out.push(format!("{}{}{} {}", prefix, key, delimiter, value)),
-            KvLine::Other(raw) => out.push(raw.to_string()),
-        }
-    }
-    let mut content = out.join("\n");
-    content.push('\n');
-    content
-}
-
-fn upsert_kv_file(path: &Path, delimiter: char, updates: &[(&str, String)]) {
-    let content = fs::read_to_string(path).unwrap_or_default();
-    let mut lines = parse_kv_lines(&content, delimiter);
-    for (key, value) in updates {
-        set_kv_value(&mut lines, key, value, delimiter);
-    }
-    let content = render_kv_lines(&lines);
-    fs::write(path, content).expect("Failed to write key/value file");
-}
-
-fn update_ini_section(content: &str, section: &str, updates: &[(&str, String)]) -> String {
-    let mut out: Vec<String> = Vec::new();
-    let mut in_section = false;
-    let mut seen_section = false;
-    let mut seen_keys = vec![false; updates.len()];
-
-    for raw_line in content.lines() {
-        let trimmed = raw_line.trim();
-        if trimmed.starts_with('[') && trimmed.ends_with(']') {
-            if in_section {
-                for (idx, (key, value)) in updates.iter().enumerate() {
-                    if !seen_keys[idx] {
-                        out.push(format!("{}={}", key, value));
-                    }
-                }
-            }
-            let name = trimmed[1..trimmed.len() - 1].trim();
-            in_section = name.eq_ignore_ascii_case(section);
-            if in_section {
-                seen_section = true;
-            }
-            out.push(raw_line.to_string());
-            continue;
-        }
-
-        if in_section
-            && !trimmed.is_empty()
-            && !trimmed.starts_with('#')
-            && !trimmed.starts_with(';')
-            && raw_line.contains('=')
-        {
-            if let Some((left, _)) = raw_line.split_once('=') {
-                let key = left.trim();
-                let mut replaced = false;
-                for (idx, (target_key, value)) in updates.iter().enumerate() {
-                    if key.eq_ignore_ascii_case(target_key) {
-                        let indent: String =
-                            raw_line.chars().take_while(|c| c.is_whitespace()).collect();
-                        out.push(format!("{}{}={}", indent, key, value));
-                        seen_keys[idx] = true;
-                        replaced = true;
-                        break;
-                    }
-                }
-                if replaced {
-                    continue;
-                }
-            }
-        }
-
-        out.push(raw_line.to_string());
-    }
-
-    if in_section {
-        for (idx, (key, value)) in updates.iter().enumerate() {
-            if !seen_keys[idx] {
-                out.push(format!("{}={}", key, value));
-            }
-        }
-    } else if !seen_section {
-        if !out.is_empty() {
-            out.push(String::new());
-        }
-        out.push(format!("[{}]", section));
-        for (key, value) in updates {
-            out.push(format!("{}={}", key, value));
-        }
-    }
-
-    let mut content = out.join("\n");
-    content.push('\n');
-    content
-}
-
-fn extract_attr_value(line: &str, attr: &str) -> Option<String> {
-    let needle = format!("{}=\"", attr);
-    let start = line.find(&needle)? + needle.len();
-    let rest = &line[start..];
-    let end = rest.find('"')?;
-    Some(rest[..end].to_string())
-}
-
-fn extract_tag_value(line: &str, tag: &str) -> Option<String> {
-    let open = format!("<{}>", tag);
-    let close = format!("</{}>", tag);
-    let start = line.find(&open)? + open.len();
-    let end = line.find(&close)?;
-    if end < start {
-        return None;
-    }
-    Some(line[start..end].trim().to_string())
-}
-
-fn update_openbox_rc(content: &str, scale: i32, font_name: &str) -> (String, Option<String>) {
-    let active_size = 10 * scale;
-    let menu_size = 11 * scale;
-    let mut out: Vec<String> = Vec::new();
-    let mut in_font = false;
-    let mut in_theme = false;
-    let mut font_place: Option<String> = None;
-    let mut theme_name: Option<String> = None;
-
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with("<theme>") {
-            in_theme = true;
-            out.push(line.to_string());
-            continue;
-        }
-        if trimmed.starts_with("</theme>") {
-            in_theme = false;
-            out.push(line.to_string());
-            continue;
-        }
-
-        if trimmed.starts_with("<font") {
-            in_font = true;
-            font_place = extract_attr_value(trimmed, "place");
-            out.push(line.to_string());
-            continue;
-        }
-        if trimmed.starts_with("</font>") {
-            in_font = false;
-            font_place = None;
-            out.push(line.to_string());
-            continue;
-        }
-
-        if in_theme && !in_font && theme_name.is_none() {
-            if let Some(name) = extract_tag_value(trimmed, "name") {
-                theme_name = Some(name);
-            }
-            out.push(line.to_string());
-            continue;
-        }
-
-        if in_font {
-            if extract_tag_value(trimmed, "name").is_some() {
-                let indent: String = line.chars().take_while(|c| c.is_whitespace()).collect();
-                out.push(format!("{}<name>{}</name>", indent, font_name));
-                continue;
-            }
-            if extract_tag_value(trimmed, "size").is_some() {
-                let indent: String = line.chars().take_while(|c| c.is_whitespace()).collect();
-                let size = match font_place.as_deref() {
-                    Some("ActiveWindow") | Some("InactiveWindow") => active_size,
-                    Some("MenuHeader")
-                    | Some("MenuItem")
-                    | Some("ActiveOnScreenDisplay")
-                    | Some("InactiveOnScreenDisplay") => menu_size,
-                    _ => menu_size,
-                };
-                out.push(format!("{}<size>{}</size>", indent, size));
-                continue;
-            }
-        }
-
-        out.push(line.to_string());
-    }
-
-    let mut out = out.join("\n");
-    out.push('\n');
-    (out, theme_name)
-}
-
-fn update_openbox_theme(fs_root: &Path, theme_name: &str, scale: i32) {
-    let user_theme = fs_root.join(format!("root/.themes/{}/openbox-3/themerc", theme_name));
-    let system_theme = fs_root.join(format!("usr/share/themes/{}/openbox-3/themerc", theme_name));
-    let source = if user_theme.exists() {
-        user_theme.clone()
-    } else if system_theme.exists() {
-        system_theme
-    } else {
-        return;
-    };
-
-    let content = fs::read_to_string(&source).unwrap_or_default();
-    if content.is_empty() {
-        return;
-    }
-
-    let button_size = 18 * scale;
-    let title_height = 22 * scale;
-    let mut lines = parse_kv_lines(&content, ':');
-    set_kv_value(&mut lines, "button.width", &button_size.to_string(), ':');
-    set_kv_value(&mut lines, "button.height", &button_size.to_string(), ':');
-    set_kv_value(&mut lines, "title.height", &title_height.to_string(), ':');
-
-    let content = render_kv_lines(&lines);
-    let _ = fs::create_dir_all(
-        user_theme
-            .parent()
-            .expect("Failed to read openbox theme directory"),
-    );
-    fs::write(&user_theme, content).expect("Failed to write openbox theme file");
 }
 
 fn setup_fake_bwrap(_: &SetupOptions) -> StageOutput {
@@ -718,7 +441,7 @@ runpy.run_path('/usr/sbin/onboard', run_name='__main__')
     None
 }
 
-fn setup_lxqt_scaling(options: &SetupOptions) -> StageOutput {
+fn setup_plasma_scaling(options: &SetupOptions) -> StageOutput {
     let fs_root = Path::new(ARCH_FS_ROOT);
     let android_app = options.android_app.clone();
 
@@ -755,72 +478,7 @@ fn setup_lxqt_scaling(options: &SetupOptions) -> StageOutput {
         android_app,
     );
 
-    let scale = ((density_dpi as f32) / 160.0 * 1.1).max(1.0).round() as i32;
-    let xft_dpi = scale * 96;
-
-    let xresources_path = fs_root.join("root/.Xresources");
-    upsert_kv_file(&xresources_path, ':', &[("Xft.dpi", xft_dpi.to_string())]);
-
-    let session_path = fs_root.join("root/.config/lxqt/session.conf");
-    let _ = fs::create_dir_all(
-        session_path
-            .parent()
-            .expect("Failed to read LXQt session.conf parent directory"),
-    );
-
-    let session_content = fs::read_to_string(&session_path).unwrap_or_default();
-    let session_with_env = update_ini_section(
-        &session_content,
-        "Environment",
-        &[
-            ("GDK_SCALE", scale.to_string()),
-            ("QT_SCALE_FACTOR", scale.to_string()),
-        ],
-    );
-    let session_out = update_ini_section(
-        &session_with_env,
-        "General",
-        &[("window_manager", "openbox".to_string())],
-    );
-    fs::write(&session_path, session_out).expect("Failed to write session.conf");
-
-    // lxqt-powermanagement frequently crashes in a PRoot container due to missing
-    // host power-management interfaces. Disable its autostart by default.
-    let autostart_dir = fs_root.join("root/.config/autostart");
-    let _ = fs::create_dir_all(&autostart_dir);
-    let powermanagement_override = autostart_dir.join("lxqt-powermanagement.desktop");
-    let powermanagement_hidden = r#"[Desktop Entry]
-Type=Application
-Name=LXQt Power Management
-Hidden=true
-"#;
-    fs::write(&powermanagement_override, powermanagement_hidden)
-        .expect("Failed to disable lxqt-powermanagement autostart");
-
-    let openbox_user_rc = fs_root.join("root/.config/openbox/rc.xml");
-    let openbox_system_rc = fs_root.join("etc/xdg/openbox/rc.xml");
-    let openbox_source = if openbox_user_rc.exists() {
-        openbox_user_rc.clone()
-    } else if openbox_system_rc.exists() {
-        openbox_system_rc
-    } else {
-        return None;
-    };
-
-    let rc_content = fs::read_to_string(&openbox_source).unwrap_or_default();
-    if !rc_content.is_empty() {
-        let (rc_out, theme_name) = update_openbox_rc(&rc_content, scale, "DejaVu Sans");
-        let _ = fs::create_dir_all(
-            openbox_user_rc
-                .parent()
-                .expect("Failed to read openbox config directory"),
-        );
-        fs::write(&openbox_user_rc, rc_out).expect("Failed to write openbox rc.xml");
-
-        if let Some(theme_name) = theme_name {
-            update_openbox_theme(fs_root, &theme_name, scale);
-        }
-    }
+    apply_plasma_scaling(fs_root, density_dpi);
 
     None
 }
@@ -897,10 +555,10 @@ pub fn setup(android_app: AndroidApp) -> PolarBearBackend {
         Box::new(simulate_linux_sysdata_stage), // Step 2. Simulate Linux system data
         Box::new(install_dependencies),         // Step 3. Install dependencies
         Box::new(setup_firefox_config),         // Step 4. Setup Firefox config
-        Box::new(setup_qterminal_wrapper), // Step 5. Ensure qterminal launches interactive bash
+        Box::new(setup_qterminal_wrapper), // Step 5. Ensure qterminal launches interactive bash (no-op when QTerminal isn't installed; KDE Plasma uses Konsole)
         Box::new(setup_fake_bwrap),           // Step 6. Replace bwrap with a no-sandbox shim (Android has no user namespaces)
         Box::new(setup_onboard_signal_fix), // Step 7. Wrap Onboard to survive proot fstat/signal.set_wakeup_fd failure
-        Box::new(setup_lxqt_scaling),       // Step 8. Setup LXQt HiDPI scaling
+        Box::new(setup_plasma_scaling),     // Step 8. Setup KDE Plasma HiDPI/font scaling, disable Baloo + DrKonqi
         Box::new(fix_xkb_symlink),          // Step 9. Fix xkb symlink (last)
     ];
 

@@ -6,6 +6,10 @@ title: Using other Desktop Environments
 This is an advanced topic. Proceed with your own risk.
 :::
 
+:::info
+Local Desktop now ships with **KDE Plasma (X11 via Xwayland)** as its default desktop environment. The instructions on this page are for users who want to swap KDE Plasma out for a different DE (LXQt, Xfce, etc.).
+:::
+
 ## The `[command]` configs
 
 Local Desktop uses 3 commands to set up your desktop environment:
@@ -61,15 +65,22 @@ Put important environment variables at the beginning of the command like `XDG_RU
 
 ## Config templates
 
-### KDE Plasma
+### KDE Plasma (default)
+
+KDE Plasma is the default desktop environment shipped with Local Desktop, so on a fresh install **you don't need to configure anything**. The defaults compiled into the app are equivalent to:
 
 ```toml title="/etc/localdesktop/localdesktop.toml"
 [command]
-try_check = "pacman -Qg plasma"
-try_install = "stdbuf -oL pacman -Syu plasma --noconfirm --noprogressbar"
+check = "pacman -Qg plasma && pacman -Q noto-fonts && pacman -Q xorg-xwayland && pacman -Q onboard"
+install = "stdbuf -oL pacman -Syu --needed --noconfirm --noprogressbar plasma noto-fonts xorg-xwayland onboard"
 # X11 session via Xwayland
-try_launch = "XDG_RUNTIME_DIR=/tmp Xwayland -hidpi :1 2>&1 & while [ ! -e /tmp/.X11-unix/X1 ]; do sleep 0.1; done; XDG_SESSION_TYPE=x11 DISPLAY=:1 dbus-launch startplasma-x11 2>&1"
-# Wayland session
+launch = "XDG_RUNTIME_DIR=/tmp Xwayland -hidpi :1 2>&1 & while [ ! -e /tmp/.X11-unix/X1 ]; do sleep 0.1; done; XDG_SESSION_TYPE=x11 DISPLAY=:1 dbus-launch startplasma-x11 2>&1"
+```
+
+If you want to experiment with the Wayland session instead of X11, override the launch command via `try_launch`:
+
+```toml
+[command]
 try_launch = "XDG_RUNTIME_DIR=/tmp WAYLAND_DISPLAY=wayland-0 /usr/lib/plasma-dbus-run-session-if-needed startplasma-wayland 2>&1"
 ```
 
@@ -80,6 +91,17 @@ Feedback:
 - The time zone is not set; however, it is simple to set one with KDE's UI.
 - "Could not enter folder tags:." error popups.
 - The Wayland session offers notably better performance than the X11 session or PRoot Distro + Termux:X11, but some features (e.g., Spectacle screenshots) may not work. With KDE 7 dropping X11 support, improving Wayland compatibility and being less dependent on Xwayland will be a bigger priority.
+
+### LXQt
+
+LXQt was the previous default desktop environment of Local Desktop. To switch back to it, paste the following into your `localdesktop.toml`:
+
+```toml title="/etc/localdesktop/localdesktop.toml"
+[command]
+try_check = "pacman -Q noto-fonts && pacman -Q lxqt-session && pacman -Q lxqt-panel && pacman -Q pcmanfm-qt && pacman -Q openbox && pacman -Q xorg-xwayland && pacman -Q lxqt-wayland-session && pacman -Q labwc && pacman -Q breeze-icons && pacman -Q qterminal && pacman -Q onboard"
+try_install = "stdbuf -oL pacman -Syu --needed --noconfirm --noprogressbar noto-fonts liblxqt lxqt-about lxqt-admin lxqt-archiver lxqt-config lxqt-globalkeys lxqt-menu-data lxqt-notificationd lxqt-openssh-askpass lxqt-panel lxqt-policykit lxqt-powermanagement lxqt-qtplugin lxqt-runner lxqt-session lxqt-sudo lxqt-themes lxqt-wayland-session pcmanfm-qt qps qterminal screengrab xdg-desktop-portal-lxqt openbox xorg-xwayland labwc breeze-icons onboard"
+try_launch = "XDG_RUNTIME_DIR=/tmp Xwayland -hidpi :1 2>&1 & while [ ! -e /tmp/.X11-unix/X1 ]; do sleep 0.1; done; XDG_SESSION_TYPE=x11 DISPLAY=:1 dbus-run-session startlxqt 2>&1"
+```
 
 ### Others
 

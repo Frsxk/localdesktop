@@ -61,18 +61,36 @@ pub struct CommandConfig {
     pub launch: String,
 }
 
+// Default desktop environment: KDE Plasma X11 session via Xwayland.
+//
+// Rationale (see also `gh-pages/docs/user/3-custom-de.md`):
+//   * KDE Plasma offers a richer, more polished out-of-the-box experience on
+//     Android-sized screens than LXQt and is the DE recommended in the project's
+//     own user-facing docs and the 2025-07-30 KDE-support blog post.
+//   * `pacman -Qg plasma` succeeds when at least one package from the Plasma
+//     group is installed; together with the explicit checks for the auxiliary
+//     packages we install, this gives us a reliable readiness signal.
+//   * `startplasma-x11` is provided by `plasma-workspace` (member of the
+//     `plasma` group). We launch it under `dbus-launch` so KDE gets a proper
+//     session bus, matching the official KDE template in our docs.
+//   * `xorg-xwayland` and `noto-fonts` are listed explicitly so the install
+//     succeeds even on minimal Arch images that don't pull them in.
+//   * `onboard` provides the on-screen keyboard wrapper that `setup.rs`
+//     patches for proot compatibility, ensuring users without a physical
+//     keyboard can type from the very first launch.
+
 fn default_check() -> String {
-    "pacman -Q noto-fonts && pacman -Q lxqt-session && pacman -Q lxqt-panel && pacman -Q pcmanfm-qt && pacman -Q openbox && pacman -Q xorg-xwayland && pacman -Q lxqt-wayland-session && pacman -Q labwc && pacman -Q breeze-icons && pacman -Q qterminal && pacman -Q onboard"
+    "pacman -Qg plasma && pacman -Q noto-fonts && pacman -Q xorg-xwayland && pacman -Q onboard"
         .to_string()
 }
 
 fn default_install() -> String {
-    "stdbuf -oL pacman -Syu --needed --noconfirm --noprogressbar noto-fonts liblxqt lxqt-about lxqt-admin lxqt-archiver lxqt-config lxqt-globalkeys lxqt-menu-data lxqt-notificationd lxqt-openssh-askpass lxqt-panel lxqt-policykit lxqt-powermanagement lxqt-qtplugin lxqt-runner lxqt-session lxqt-sudo lxqt-themes lxqt-wayland-session pcmanfm-qt qps qterminal screengrab xdg-desktop-portal-lxqt openbox xorg-xwayland labwc breeze-icons onboard"
+    "stdbuf -oL pacman -Syu --needed --noconfirm --noprogressbar plasma noto-fonts xorg-xwayland onboard"
         .to_string()
 }
 
 fn default_launch() -> String {
-    "XDG_RUNTIME_DIR=/tmp Xwayland -hidpi :1 2>&1 & while [ ! -e /tmp/.X11-unix/X1 ]; do sleep 0.1; done; XDG_SESSION_TYPE=x11 DISPLAY=:1 dbus-run-session startlxqt 2>&1"
+    "XDG_RUNTIME_DIR=/tmp Xwayland -hidpi :1 2>&1 & while [ ! -e /tmp/.X11-unix/X1 ]; do sleep 0.1; done; XDG_SESSION_TYPE=x11 DISPLAY=:1 dbus-launch startplasma-x11 2>&1"
         .to_string()
 }
 
@@ -255,4 +273,65 @@ mod tests {
             },
         );
     }
+
+    #[test]
+    fn default_config_targets_kde_plasma_x11_session() {
+        // The default desktop environment must be KDE Plasma X11 (via Xwayland).
+        // These assertions guard against accidental regressions in `default_check`,
+        // `default_install`, and `default_launch` which would silently change which
+        // DE a fresh install boots into.
+        let default_command = CommandConfig::default();
+
+        // The check must verify the Plasma group plus the auxiliary packages we
+        // install (fonts, Xwayland, the on-screen keyboard wrapper target).
+        assert!(
+            default_command.check.contains("pacman -Qg plasma"),
+            "default check must verify the `plasma` package group, got: {}",
+            default_command.check
+        );
+        for pkg in ["noto-fonts", "xorg-xwayland", "onboard"] {
+            assert!(
+                default_command.check.contains(&format!("pacman -Q {}", pkg)),
+                "default check must verify presence of `{}`, got: {}",
+                pkg,
+                default_command.check
+            );
+        }
+        assert!(
+            !default_command.check.contains("lxqt"),
+            "default check must not mention LXQt anymore, got: {}",
+            default_command.check
+        );
+
+        // The install command must use `pacman -Syu` with `--noconfirm` and pull
+        // the Plasma group plus our auxiliary packages.
+        assert!(default_command.install.starts_with("stdbuf -oL "));
+        assert!(default_command.install.contains("--noconfirm"));
+        assert!(default_command.install.contains("--noprogressbar"));
+        for pkg in ["plasma", "noto-fonts", "xorg-xwayland", "onboard"] {
+            assert!(
+                default_command.install.contains(pkg),
+                "default install must include `{}`, got: {}",
+                pkg,
+                default_command.install
+            );
+        }
+        assert!(
+            !default_command.install.contains("liblxqt"),
+            "default install must not mention LXQt anymore, got: {}",
+            default_command.install
+        );
+
+        // The launch command must start Xwayland on display :1 and then exec
+        // `startplasma-x11` under `dbus-launch`.
+        assert!(default_command.launch.contains("Xwayland -hidpi :1"));
+        assert!(default_command.launch.contains("DISPLAY=:1"));
+        assert!(default_command.launch.contains("dbus-launch startplasma-x11"));
+        assert!(
+            !default_command.launch.contains("startlxqt"),
+            "default launch must not invoke startlxqt anymore, got: {}",
+            default_command.launch
+        );
+    }
 }
+
