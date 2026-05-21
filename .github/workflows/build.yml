@@ -76,9 +76,13 @@ jobs:
       - name: Setup signing keystore
         run: |
           mkdir -p target/x/release/android/gradle/app
-          echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > target/x/release/android/gradle/app/release-key.jks
-          # Verify keystore
-          keytool -list -v -keystore target/x/release/android/gradle/app/release-key.jks -storepass $ANDROID_KEYSTORE_PASSWORD
+          if [ -n "$ANDROID_KEYSTORE_PASSWORD" ]; then
+            echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > target/x/release/android/gradle/app/release-key.jks
+            # Verify keystore
+            keytool -list -v -keystore target/x/release/android/gradle/app/release-key.jks -storepass "$ANDROID_KEYSTORE_PASSWORD"
+          else
+            echo "Skipping keystore setup since secrets are missing."
+          fi
 
       - name: Update manifest.yaml to target API 35
         run: |

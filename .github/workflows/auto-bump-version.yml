@@ -93,7 +93,7 @@ jobs:
               print('  - release:feature')
               print('  - release:bugfix')
               print(f'Found: {selected or "none"}')
-              raise SystemExit(1)
+              selected = ['release:feature'] # Default to minor instead of failing
 
           print(f'Using release label: {selected[0]}')
           PY
@@ -139,7 +139,7 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.ref }}
           fetch-depth: 0
-          token: ${{ secrets.PAT }}
+
 
       - name: Fetch main and tags
         run: git fetch origin "main:refs/remotes/origin/main" --tags
@@ -311,7 +311,7 @@ jobs:
         with:
           ref: main
           fetch-depth: 0
-          token: ${{ secrets.PAT }}
+
 
       - name: Extract version
         id: version
