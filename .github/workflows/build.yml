@@ -30,94 +30,118 @@ jobs:
           gradle-version: "8.14.3"
 
       - name: Extract version
-        id: get_version
-        run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
+        id: extract_version
+        run: echo "version=$(cargo metadata --format-version=1 --no-deps | jq -r '.packages[0].version')" >> "$GITHUB_OUTPUT"
 
-      - name: Set up latest Rust
-        uses: dtolnay/rust-toolchain@stable
+      - name: Extract release notes
+        id: release_notes
+        uses: actions/github-script@v7
         with:
-          targets: aarch64-linux-android, x86_64-linux-android
+          script: |
+            const fs = require("fs");
+            const path = require("path");
 
-      - name: Cache target files
-        uses: Swatinem/rust-cache@v2
+            const tag = process.env.GITHUB_REF_NAME || context.ref.replace(/^refs\/tags\//, "");
+            let notes = "";
 
-      - name: Set up dependencies
+            try {
+              const ref = await github.rest.git.getRef({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref: `tags/${tag}`,
+              });
+
+              if (ref.data.object.type === "tag") {
+                const tagObject = await github.rest.git.getTag({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  tag_sha: ref.data.object.sha,
+                });
+                notes = (tagObject.data.message || "").trim();
+              }
+            } catch (error) {
+              core.warning(`Could not load release notes from tag ${tag}: ${error.message}`);
+            }
+
+            const notesPath = path.join(process.env.RUNNER_TEMP, "release-notes.md");
+            fs.writeFileSync(notesPath, notes ? `${notes}\n` : "", "utf8");
+            core.setOutput("found", notes ? "true" : "false");
+            core.setOutput("path", notesPath);
+
+      - name: Fallback release notes to commit message
+        if: steps.release_notes.outputs.found != 'true'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y llvm lld libgl1-mesa-dev libx11-dev libxkbcommon-dev libwayland-dev
+          git log -1 --pretty=%B > "${{ steps.release_notes.outputs.path }}"
 
-      - name: Install xbuild
-        run: cargo install --path patches/xbuild/xbuild
-
-      - name: Determine keys to build
-        id: check_keys
+      - name: Setup signing keystore
         run: |
-          if [ -n "$ANDROID_KEYSTORE_PASSWORD" ] && [ -n "$ANDROID_KEY_ALIAS" ] && [ -n "$ANDROID_KEY_PASSWORD" ]; then
-            echo "HAS_SECRETS=true" >> $GITHUB_ENV
-          else
-            echo "HAS_SECRETS=false" >> $GITHUB_ENV
-          fi
+          mkdir -p target/x/release/android/gradle/app
+          echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > target/x/release/android/gradle/app/release-key.jks
+          # Verify keystore
+          keytool -list -v -keystore target/x/release/android/gradle/app/release-key.jks -storepass $ANDROID_KEYSTORE_PASSWORD
 
-      - name: Write release key
-        if: env.HAS_SECRETS == 'true'
+      - name: Update manifest.yaml to target API 35
         run: |
-          echo "${{ secrets.ANDROID_KEYSTORE_FILE }}" | base64 --decode > target/x/release/android/gradle/app/release-key.jks
+          sed -i 's/target_sdk_version: 33/target_sdk_version: 35/' manifest.yaml
 
-      - name: Build aarch64 & x64 APK
+      - name: Install LLVM
+        run: sudo apt-get update && sudo apt-get install -y llvm
+
+      - name: Download Android NDK r28 # Xbuild does this automatically, but at the moment it does not yet support NDK r28, and we need it for 16 KB ELF alignment.
         run: |
-          export RUSTFLAGS="-Clink-arg=-Wl,-z,max-page-size=16384"
-          x build --release --platform android --arch arm64,x64 --format apk
+          curl -o android-ndk-r28-linux.zip https://dl.google.com/android/repository/android-ndk-r28-linux.zip
+          unzip android-ndk-r28-linux.zip
+          rm android-ndk-r28-linux.zip
 
-      - name: Rename built APK
+      - name: Prepare Android.ndk # Replicate these steps from Xbuild's release workflow, so a fully compatible Android.ndk folder with NDK r28 is available offline in the working directory where Xbuild proceeds.
         run: |
-          mv target/x/release/android/localdesktop.apk localdesktop-universal.apk
+          TOOLCHAIN=android-ndk-r28/toolchains/llvm/prebuilt/linux-x86_64
+          CLANG_VERSION=$(ls $TOOLCHAIN/lib/clang | head -n 1)
+          CLANG=$TOOLCHAIN/lib/clang/$CLANG_VERSION
 
-      - name: Build aarch64 & x64 AAB
+          mkdir Android.ndk
+          cp -r $TOOLCHAIN/sysroot/usr Android.ndk/
+          cp -r $CLANG/lib/linux/aarch64/* Android.ndk/usr/lib/aarch64-linux-android/
+          cp -r $CLANG/lib/linux/arm/* Android.ndk/usr/lib/arm-linux-androideabi/
+          cp -r $CLANG/lib/linux/x86_64/* Android.ndk/usr/lib/x86_64-linux-android/
+          cp -r $CLANG/lib/linux/i386/* Android.ndk/usr/lib/i686-linux-android/
+
+          echo "INPUT(-lunwind)" > Android.ndk/usr/lib/aarch64-linux-android/libgcc.a
+          echo "INPUT(-lunwind)" > Android.ndk/usr/lib/arm-linux-androideabi/libgcc.a
+          echo "INPUT(-lunwind)" > Android.ndk/usr/lib/x86_64-linux-android/libgcc.a
+          echo "INPUT(-lunwind)" > Android.ndk/usr/lib/i686-linux-android/libgcc.a
+
+          mkdir -p ~/.cache/x/
+          mv Android.ndk ~/.cache/x/
+
+      - name: Build xbuild
+        working-directory: patches/xbuild
+        run: cargo install --path xbuild
+
+      - name: Build APK
+        run: x build --release --platform=android --arch=arm64 --format=apk
+
+      - name: Rename APK
         run: |
-          export RUSTFLAGS="-Clink-arg=-Wl,-z,max-page-size=16384"
-          x build --release --platform android --arch arm64,x64 --format aab
+          mv target/x/release/android/gradle/app/build/outputs/apk/debug/app-debug.apk target/x/localdesktop-${{ steps.extract_version.outputs.version }}-debug.apk
+          mv target/x/release/android/gradle/app/build/outputs/apk/release/app-release.apk target/x/localdesktop-${{ steps.extract_version.outputs.version }}.apk
+      - name: Build AAB
+        run: x build --release --platform=android --arch=arm64 --format=aab
 
-      - name: Rename built AAB
+      - name: Rename AAB
         run: |
-          mv target/x/release/android/localdesktop.aab localdesktop-universal.aab
-
-      - name: Rename APKs and upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: localdesktop-universal.apk
-          path: localdesktop-universal.apk
-
-      - name: Rename AABs and upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: localdesktop-universal.aab
-          path: localdesktop-universal.aab
-
-      - name: Release Note Check
-        id: get_release_notes
-        if: startsWith(github.ref, 'refs/tags/v')
-        run: |
-          VERSION="${GITHUB_REF#refs/tags/v}"
-          echo "Looking for notes for version $VERSION in CHANGELOG.md"
-
-          # Extract notes between the matching version header and the next version header
-          awk "/^## $VERSION/ {flag=1; next} /^## / {if (flag) {flag=0; exit}} flag" CHANGELOG.md > release_notes.txt
-
-          if [ -s release_notes.txt ]; then
-            echo "Release notes found."
-            echo "HAS_RELEASE_NOTES=true" >> $GITHUB_ENV
-          else
-            echo "No release notes found."
-            echo "HAS_RELEASE_NOTES=false" >> $GITHUB_ENV
-          fi
-
-      - name: Release
+          mv target/x/release/android/gradle/app/build/outputs/bundle/debug/app-debug.aab target/x/localdesktop-${{ steps.extract_version.outputs.version }}-debug.aab
+          mv target/x/release/android/gradle/app/build/outputs/bundle/release/app-release.aab target/x/localdesktop-${{ steps.extract_version.outputs.version }}.aab
+      - name: Create GitHub Release
+        if: github.ref_type == 'tag'
         uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/v')
         with:
+          token: ${{ secrets.PAT }}
+          name: Local Desktop v${{ steps.extract_version.outputs.version }}
+          tag_name: v${{ steps.extract_version.outputs.version }}
+          body_path: ${{ steps.release_notes.outputs.path }}
           files: |
-            localdesktop-universal.apk
-            localdesktop-universal.aab
-          body_path: ${{ env.HAS_RELEASE_NOTES == 'true' && 'release_notes.txt' || '' }}
-          fail_on_unmatched_files: true
-          draft: true
+            target/x/localdesktop-${{ steps.extract_version.outputs.version }}.apk
+            target/x/localdesktop-${{ steps.extract_version.outputs.version }}-debug.apk
+            target/x/localdesktop-${{ steps.extract_version.outputs.version }}.aab
+            target/x/localdesktop-${{ steps.extract_version.outputs.version }}-debug.aab
