@@ -62,17 +62,17 @@ pub struct CommandConfig {
 }
 
 fn default_check() -> String {
-    "pacman -Q noto-fonts && pacman -Q lxqt-session && pacman -Q lxqt-panel && pacman -Q pcmanfm-qt && pacman -Q openbox && pacman -Q xorg-xwayland && pacman -Q lxqt-wayland-session && pacman -Q labwc && pacman -Q breeze-icons && pacman -Q qterminal && pacman -Q onboard"
+    "pacman -Q noto-fonts && pacman -Q plasma-desktop && pacman -Q konsole && pacman -Q dolphin && pacman -Q kate && pacman -Q ark && pacman -Q gwenview && pacman -Q okular && pacman -Q xdg-desktop-portal-kde && pacman -Q kde-gtk-config && pacman -Q breeze && pacman -Q breeze-gtk && pacman -Q plasma-pa && pacman -Q xorg-xwayland && pacman -Q onboard"
         .to_string()
 }
 
 fn default_install() -> String {
-    "stdbuf -oL pacman -Syu --needed --noconfirm --noprogressbar noto-fonts liblxqt lxqt-about lxqt-admin lxqt-archiver lxqt-config lxqt-globalkeys lxqt-menu-data lxqt-notificationd lxqt-openssh-askpass lxqt-panel lxqt-policykit lxqt-powermanagement lxqt-qtplugin lxqt-runner lxqt-session lxqt-sudo lxqt-themes lxqt-wayland-session pcmanfm-qt qps qterminal screengrab xdg-desktop-portal-lxqt openbox xorg-xwayland labwc breeze-icons onboard"
+    "stdbuf -oL pacman -Syu --needed --noconfirm --noprogressbar noto-fonts plasma-desktop konsole dolphin kate ark gwenview okular xdg-desktop-portal-kde kde-gtk-config breeze breeze-gtk plasma-pa xorg-xwayland onboard"
         .to_string()
 }
 
 fn default_launch() -> String {
-    "XDG_RUNTIME_DIR=/tmp Xwayland -hidpi :1 2>&1 & while [ ! -e /tmp/.X11-unix/X1 ]; do sleep 0.1; done; XDG_SESSION_TYPE=x11 DISPLAY=:1 dbus-run-session startlxqt 2>&1"
+    "XDG_RUNTIME_DIR=/tmp Xwayland -hidpi :1 2>&1 & while [ ! -e /tmp/.X11-unix/X1 ]; do sleep 0.1; done; XDG_SESSION_TYPE=x11 DISPLAY=:1 dbus-run-session startplasma-x11 2>&1"
         .to_string()
 }
 
