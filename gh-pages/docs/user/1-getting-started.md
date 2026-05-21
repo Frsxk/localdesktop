@@ -7,7 +7,7 @@ Welcome to Local Desktop!
 If you are seeing this page, the application is performing several tasks in the background:
 
 - It is extracting an Arch Linux ARM64 filesystem.
-- It is installing Xfce4 and other important packages.
+- It is installing KDE Plasma and other important packages.
 
 You can click the progress bar to show/hide the log panel. This process can take up to 10 minutes. In the meantime, let's spend your precious time to understand some important concepts.
 
@@ -47,15 +47,15 @@ The hardest part is installing `yay` or `paru`. You have to follow the `README.m
 
 ## I don't have a physical keyboard.
 
-After Xfce launches, go to _"Applications"_ > _"Accessories"_ > _"Onboard"_. This is an on-screen keyboard. But you are highly recommended to get a physical keyboard.
+After KDE Plasma launches, open the application launcher (the Kickoff menu in the corner of the panel) and search for _"Onboard"_ — that's our on-screen keyboard. The Plasma panel itself also exposes its own _Virtual Keyboard_ widget if you'd rather use the KDE-native one. Either way, you are highly recommended to get a physical keyboard.
 
 ![Onboard](/img/onboard.webp#boxed)
 
 ## Text are too small
 
-Change the _"Window Scaling"_ setting in _"Applications"_ > _"Settings"_ > _"Appearance"_.
+Open _"System Settings"_ from the Kickoff menu and head to _"Display & Monitor"_ → _"Display Configuration"_. Adjust _"Global Scale"_ to taste. Local Desktop also pre-seeds a HiDPI font DPI based on your Android display density at first launch (via `kdeglobals`'s `forceFontDPI`), so if your fonts already look reasonable you can leave the scale at 100%.
 
-![2x Window Scaling](/img/2x-scaling.webp#boxed)
+![Display & Monitor](/img/2x-scaling.webp#boxed)
 
 ## Disable phantom process killer
 

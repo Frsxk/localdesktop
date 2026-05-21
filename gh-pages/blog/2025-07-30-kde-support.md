@@ -25,3 +25,7 @@ try_launch = "XDG_RUNTIME_DIR=/tmp WAYLAND_DISPLAY=wayland-0 /usr/lib/plasma-dbu
 
 
 The outcome has been so promising that we're considering setting KDE Plasma as the default desktop environment in Local Desktop. This aligns with our long-term goal: replacing XWayland with a native Wayland session for better performance. We'd love to hear your thoughts on our [GitHub repository](https://github.com/localdesktop/localdesktop.github.io), and toss us a ⭐️ to help keep us motivated to improve KDE Plasma compatibility!
+
+:::tip Update
+KDE Plasma (X11 via Xwayland) is now the **default** desktop environment in Local Desktop — fresh installs land you in Plasma without any extra configuration. If you'd like to swap it out, see [Using other Desktop Environments](/docs/user/custom-de) for templates (LXQt, Xfce, etc.).
+:::
