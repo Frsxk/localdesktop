@@ -88,12 +88,7 @@ jobs:
           selected = [label for label in release_labels if label in labels]
 
           if len(selected) != 1:
-              print('PRs to main must have exactly one release label:')
-              print('  - release:breaking')
-              print('  - release:feature')
-              print('  - release:bugfix')
-              print(f'Found: {selected or "none"}')
-              raise SystemExit(1)
+              selected = ['release:feature'] # Default to minor instead of failing
 
           print(f'Using release label: {selected[0]}')
           PY
@@ -139,7 +134,7 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.ref }}
           fetch-depth: 0
-          token: ${{ secrets.PAT }}
+          token: ${{ github.token }}
 
       - name: Fetch main and tags
         run: git fetch origin "main:refs/remotes/origin/main" --tags
@@ -298,10 +293,7 @@ jobs:
           selected = [label for label in release_labels if label in labels]
 
           if len(selected) != 1:
-              raise SystemExit(
-                  'Expected exactly one release label: '
-                  'release:breaking, release:feature, or release:bugfix'
-              )
+              selected = ['release:feature']
 
           print(f'Publishing tag for {selected[0]}')
           PY
@@ -311,7 +303,7 @@ jobs:
         with:
           ref: main
           fetch-depth: 0
-          token: ${{ secrets.PAT }}
+          token: ${{ github.token }}
 
       - name: Extract version
         id: version

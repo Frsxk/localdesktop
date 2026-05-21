@@ -718,34 +718,27 @@ runpy.run_path('/usr/sbin/onboard', run_name='__main__')
     None
 }
 
-fn setup_lxqt_scaling(options: &SetupOptions) -> StageOutput {
+fn setup_kde_scaling(options: &SetupOptions) -> StageOutput {
     let fs_root = Path::new(ARCH_FS_ROOT);
-    let android_app = options.android_app.clone();
 
-    let mut density_dpi: i32 = 160;
+    let android_app = options.android_app.clone();
+    let mut density_dpi = 160;
+
     run_in_jvm(
         |env, app| {
-            let activity = unsafe { JObject::from_raw(app.activity_as_ptr() as *mut _jobject) };
+            let activity = unsafe { JObject::from_raw(app.activity_as_ptr() as *mut _) };
             let resources = env
-                .call_method(
-                    activity,
-                    "getResources",
-                    "()Landroid/content/res/Resources;",
-                    &[],
-                )
-                .expect("Failed to call getResources")
+                .call_method(&activity, "getResources", "()Landroid/content/res/Resources;", &[])
+                .expect("Failed to get Resources")
                 .l()
-                .expect("Failed to read getResources result");
+                .expect("Failed to cast to Object");
+
             let metrics = env
-                .call_method(
-                    resources,
-                    "getDisplayMetrics",
-                    "()Landroid/util/DisplayMetrics;",
-                    &[],
-                )
-                .expect("Failed to call getDisplayMetrics")
+                .call_method(resources, "getDisplayMetrics", "()Landroid/util/DisplayMetrics;", &[])
+                .expect("Failed to get DisplayMetrics")
                 .l()
-                .expect("Failed to read getDisplayMetrics result");
+                .expect("Failed to cast to Object");
+
             density_dpi = env
                 .get_field(metrics, "densityDpi", "I")
                 .expect("Failed to read densityDpi")
@@ -761,65 +754,43 @@ fn setup_lxqt_scaling(options: &SetupOptions) -> StageOutput {
     let xresources_path = fs_root.join("root/.Xresources");
     upsert_kv_file(&xresources_path, ':', &[("Xft.dpi", xft_dpi.to_string())]);
 
-    let session_path = fs_root.join("root/.config/lxqt/session.conf");
-    let _ = fs::create_dir_all(
-        session_path
-            .parent()
-            .expect("Failed to read LXQt session.conf parent directory"),
+    // Apply KDE environment variables via a profile script so it loads correctly for the session
+    let profile_d_dir = fs_root.join("etc/profile.d");
+    let _ = fs::create_dir_all(&profile_d_dir);
+    let kde_scaling_sh = profile_d_dir.join("kde-scaling.sh");
+    let script_content = format!(
+        "export QT_AUTO_SCREEN_SCALE_FACTOR=0
+export QT_SCALE_FACTOR={}
+export GDK_SCALE={}
+export GDK_DPI_SCALE=1
+",
+        scale, scale
     );
+    fs::write(&kde_scaling_sh, script_content).expect("Failed to write kde-scaling.sh");
+    // Ensure executable permissions
+    let _ = fs::set_permissions(&kde_scaling_sh, std::fs::Permissions::from_mode(0o755));
 
-    let session_content = fs::read_to_string(&session_path).unwrap_or_default();
-    let session_with_env = update_ini_section(
-        &session_content,
-        "Environment",
-        &[
-            ("GDK_SCALE", scale.to_string()),
-            ("QT_SCALE_FACTOR", scale.to_string()),
-        ],
-    );
-    let session_out = update_ini_section(
-        &session_with_env,
-        "General",
-        &[("window_manager", "openbox".to_string())],
-    );
-    fs::write(&session_path, session_out).expect("Failed to write session.conf");
-
-    // lxqt-powermanagement frequently crashes in a PRoot container due to missing
-    // host power-management interfaces. Disable its autostart by default.
+    // Disable problematic KDE services
     let autostart_dir = fs_root.join("root/.config/autostart");
     let _ = fs::create_dir_all(&autostart_dir);
-    let powermanagement_override = autostart_dir.join("lxqt-powermanagement.desktop");
-    let powermanagement_hidden = r#"[Desktop Entry]
+
+    let services_to_disable = vec![
+        "powerdevil.desktop",
+        "kscreen.desktop",
+        "bluedevil.desktop",
+        "plasma-discover-notifier.desktop",
+        "baloo_file.desktop",
+        "ksmserver-logout-greeter.desktop",
+    ];
+
+    for service in services_to_disable {
+        let override_path = autostart_dir.join(service);
+        let hidden_content = format!("[Desktop Entry]
 Type=Application
-Name=LXQt Power Management
+Name={}
 Hidden=true
-"#;
-    fs::write(&powermanagement_override, powermanagement_hidden)
-        .expect("Failed to disable lxqt-powermanagement autostart");
-
-    let openbox_user_rc = fs_root.join("root/.config/openbox/rc.xml");
-    let openbox_system_rc = fs_root.join("etc/xdg/openbox/rc.xml");
-    let openbox_source = if openbox_user_rc.exists() {
-        openbox_user_rc.clone()
-    } else if openbox_system_rc.exists() {
-        openbox_system_rc
-    } else {
-        return None;
-    };
-
-    let rc_content = fs::read_to_string(&openbox_source).unwrap_or_default();
-    if !rc_content.is_empty() {
-        let (rc_out, theme_name) = update_openbox_rc(&rc_content, scale, "DejaVu Sans");
-        let _ = fs::create_dir_all(
-            openbox_user_rc
-                .parent()
-                .expect("Failed to read openbox config directory"),
-        );
-        fs::write(&openbox_user_rc, rc_out).expect("Failed to write openbox rc.xml");
-
-        if let Some(theme_name) = theme_name {
-            update_openbox_theme(fs_root, &theme_name, scale);
-        }
+", service);
+        let _ = fs::write(&override_path, hidden_content);
     }
 
     None
@@ -900,7 +871,7 @@ pub fn setup(android_app: AndroidApp) -> PolarBearBackend {
         Box::new(setup_qterminal_wrapper), // Step 5. Ensure qterminal launches interactive bash
         Box::new(setup_fake_bwrap),           // Step 6. Replace bwrap with a no-sandbox shim (Android has no user namespaces)
         Box::new(setup_onboard_signal_fix), // Step 7. Wrap Onboard to survive proot fstat/signal.set_wakeup_fd failure
-        Box::new(setup_lxqt_scaling),       // Step 8. Setup LXQt HiDPI scaling
+        Box::new(setup_kde_scaling),       // Step 8. Setup KDE HiDPI scaling and Disable Services
         Box::new(fix_xkb_symlink),          // Step 9. Fix xkb symlink (last)
     ];
 
